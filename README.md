@@ -1,45 +1,79 @@
 # cicndt-cmmc-sharepoint
 
-Planning and tracking tooling for organizing the CICNDT CMMC Preparation
-SharePoint site (`https://cicndt.sharepoint.com/sites/AIMM-Center-CMMC/`).
+Tooling for organizing the CICNDT CMMC Preparation SharePoint site
+(`https://cicndt.sharepoint.com/sites/AIMM-Center-CMMC/`) via a dedicated
+Azure AD app registration and the Microsoft Graph API — not Claude's M365
+connector, which is bound to a personal (`cl@cllucas.com`) account with no
+reach into the CICNDT tenant.
 
-## What this is
+## Auth: client credentials (app-only)
 
-Actual SharePoint mutations (renaming, uploading, moving files) are done
-through Claude's Microsoft 365 MCP connector (`sharepoint_search`,
-`sharepoint_rename_item`, `sharepoint_upload_file`, etc.) inside a Claude
-session — not by this codebase directly. No Azure AD app registration or
-Graph SDK is used.
+The app authenticates as itself using a client secret — no interactive
+login per run, good for unattended scripts. This means Graph API access is
+governed entirely by whatever **Application permissions** are granted to
+the app in Entra, not by what any specific user can do.
 
-This project holds the parts that benefit from being code instead of
-one-off conversation state:
+### Entra setup (portal steps — do these as `cllucas@cicndt.com`)
 
-- **`docs/naming-schema.md`** — the actual kebab-case naming convention for
-  the CMMC Preparation site, once defined. Not yet written; the naming
-  schema must come from a real source (this project's memory, an actual
-  planning session, or the user directly) rather than be assumed.
-- **`docs/progress.md`** (or a CSV journal, once real work starts) — a
-  durable record of what's been renamed/uploaded, in the same
-  copy-verify-journal spirit as the local CICNDT migration in
-  `../python-cleanup-project/docs/cicndt-migration/`. This is what lets
-  a rename task actually be paused and resumed across sessions, unlike an
-  unverifiable claim of prior progress.
-- **`src/`** — Python helpers for the parts that are easier to script than
-  to do by hand in conversation: e.g. taking a SharePoint folder listing
-  (exported via `sharepoint_folder_search`/`sharepoint_search`) and
-  computing a kebab-case rename plan against it, or diffing two listings
-  to confirm a batch of renames landed correctly.
+1. **App registration** — done: `ai-code-agent`, client secret created
+   (expires 3/14/2027).
+2. **API permissions** → remove any Delegated permissions if present, add
+   **Application** permissions (not Delegated):
+   - Choose ONE of:
+     - **`Sites.Selected`** (recommended) — the app can only reach sites
+       explicitly granted to it. Requires one extra step below, but keeps
+       the app scoped to just this CMMC site rather than every SharePoint
+       site in the tenant — appropriate given the CUI/compliance context.
+     - **`Sites.ReadWrite.All`** — simpler (one admin-consent click, no
+       extra step), but grants the app read/write access to *every*
+       SharePoint site in the CICNDT tenant.
+3. Click **Grant admin consent for CICNDT** (needs Global/SharePoint/
+   Application Admin rights — flag if `cllucas@cicndt.com` doesn't have one).
+4. **If using `Sites.Selected`**: admin consent alone isn't enough — a site
+   admin must separately grant this app access to the specific site. Once
+   you have the site ID (running `src/resolve_site.py` will fail until this
+   step is done, but the error message explains it), a tenant/site admin
+   runs, while signed into their own account (e.g. via Graph Explorer):
+   ```
+   POST https://graph.microsoft.com/v1.0/sites/{site-id}/permissions
+   {
+     "roles": ["write"],
+     "grantedToIdentities": [{
+       "application": { "id": "<AZURE_CLIENT_ID>", "displayName": "ai-code-agent" }
+     }]
+   }
+   ```
 
-## Status
-
-Scaffolded 2026-09-15. No naming schema or progress record exists yet —
-those get built from scratch with real verification at each step, not
-carried over from an unverified prior claim.
-
-## Setup
+### Local setup
 
 ```
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env   # then fill in AZURE_TENANT_ID and AZURE_CLIENT_ID
+                        # (AZURE_CLIENT_SECRET is already set)
+python3 src/resolve_site.py
 ```
+
+`resolve_site.py` is the smoke test — confirms auth works end to end and
+resolves the site's Graph ID, which everything else needs.
+
+## What's next (not built yet)
+
+- The naming schema for `cmmc-policy/` items is still unresolved — see
+  `docs/naming-schema.md`. Evidence gathered so far (from the user's
+  personal OneDrive, a different location, via Claude's M365 connector)
+  shows an inconsistent pattern: numbers get reassigned per control family
+  rather than preserved from source documents, and collision-handling
+  varies between a numeric suffix and a content-hash suffix. Needs to be
+  settled against the actual SharePoint site's current state once this
+  app can reach it, not assumed from that other evidence.
+- Rename/upload operations themselves, once `resolve_site.py` confirms
+  connectivity.
+
+## Status
+
+2026-09-15: app registered, client secret in place, auth module and
+connectivity smoke test written. Not yet tested — waiting on the Tenant ID
+and Client ID, and on the Application-permissions/admin-consent portal
+steps above.
